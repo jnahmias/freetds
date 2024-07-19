@@ -106,6 +106,8 @@ SQLSMALLINT odbc_alloc_handle_err_type(SQLSMALLINT type);
 	CHKR2(SQLColAttribute, (odbc_stmt,a,b,c,d,e,f), SQL_HANDLE_STMT, odbc_stmt, res)
 #define CHKDescribeCol(a,b,c,d,e,f,g,h,res) \
 	CHKR2(SQLDescribeCol, (odbc_stmt,a,b,c,d,e,f,g,h), SQL_HANDLE_STMT, odbc_stmt, res)
+#define CHKDescribeParam(a,b,c,d,e,res) \
+	CHKR2(SQLDescribeParam, (odbc_stmt,a,b,c,d,e), SQL_HANDLE_STMT, odbc_stmt, res)
 #define CHKConnect(a,b,c,d,e,f,res) \
 	CHKR2(SQLConnect, (odbc_conn,a,b,c,d,e,f), SQL_HANDLE_DBC, odbc_conn, res)
 #define CHKDriverConnect(a,b,c,d,e,f,g,res) \
@@ -140,6 +142,8 @@ SQLSMALLINT odbc_alloc_handle_err_type(SQLSMALLINT type);
 	CHKR2(SQLGetData, (odbc_stmt,a,b,c,d,e), SQL_HANDLE_STMT, odbc_stmt, res)
 #define CHKMoreResults(res) \
 	CHKR2(SQLMoreResults, (odbc_stmt), SQL_HANDLE_STMT, odbc_stmt, res)
+#define CHKNumParams(a,res) \
+	CHKR2(SQLNumParams, (odbc_stmt,a), SQL_HANDLE_STMT, odbc_stmt, res)
 #define CHKNumResultCols(a,res) \
 	CHKR2(SQLNumResultCols, (odbc_stmt,a), SQL_HANDLE_STMT, odbc_stmt, res)
 #define CHKParamData(a,res) \

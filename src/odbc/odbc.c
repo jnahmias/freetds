@@ -708,6 +708,15 @@ ODBC_FUNC(SQLColumnPrivileges, (P(SQLHSTMT,hstmt), PCHARIN(CatalogName,SQLSMALLI
 	ODBC_EXIT_(stmt);
 }
 
+static char *
+replace_sql_param_markers(char *sql_in) {
+	/* Replace ODBC parameter markers (?)
+	 * with MSSQL parameter markers (@pNNNN)
+	 */
+	size_t out_len = strlen(sql_in) + numParams * 6;
+	char *sql_out;
+}
+
 SQLRETURN ODBC_PUBLIC ODBC_API
 SQLDescribeParam(SQLHSTMT hstmt, SQLUSMALLINT ipar, SQLSMALLINT FAR * pfSqlType, SQLULEN FAR * pcbParamDef,
 		 SQLSMALLINT FAR * pibScale, SQLSMALLINT FAR * pfNullable)
@@ -716,8 +725,11 @@ SQLDescribeParam(SQLHSTMT hstmt, SQLUSMALLINT ipar, SQLSMALLINT FAR * pfSqlType,
 	tdsdump_log(TDS_DBG_FUNC, "SQLDescribeParam(%p, %d, %p, %p, %p, %p)\n", 
 			hstmt, ipar, pfSqlType, pcbParamDef, pibScale, pfNullable);
 
-	/* check if prepared statement is a stored procedure */
-	/* if so, use sp_sproc_columns */
+	if ( !TDS_IS_MSSQL(stmt->dbc->tds_socket)
+	|| TDS_MS_VER(11,0,0) > stmt->dbc->tds_socket->conn->product_version ) {
+		odbc_errs_add(&stmt->errs, "IM001", "SQLDescribeParam: function only implemented for MSSQL >= 2012");
+		ODBC_EXIT(stmt, SQL_ERROR);
+	}
 
 	/* otherwise, we have a parameterized statement */
 	/* replace the '?' parameter markers with '@pNNN' */
