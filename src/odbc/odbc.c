@@ -708,18 +708,41 @@ ODBC_FUNC(SQLColumnPrivileges, (P(SQLHSTMT,hstmt), PCHARIN(CatalogName,SQLSMALLI
 	ODBC_EXIT_(stmt);
 }
 
-#if 0
-SQLRETURN ODBC_API
-SQLDescribeParam(SQLHSTMT hstmt, SQLUSMALLINT ipar, SQLSMALLINT FAR * pfSqlType, SQLUINTEGER FAR * pcbParamDef,
+SQLRETURN ODBC_PUBLIC ODBC_API
+SQLDescribeParam(SQLHSTMT hstmt, SQLUSMALLINT ipar, SQLSMALLINT FAR * pfSqlType, SQLULEN FAR * pcbParamDef,
 		 SQLSMALLINT FAR * pibScale, SQLSMALLINT FAR * pfNullable)
 {
+	ODBC_ENTER_HSTMT;
 	tdsdump_log(TDS_DBG_FUNC, "SQLDescribeParam(%p, %d, %p, %p, %p, %p)\n", 
 			hstmt, ipar, pfSqlType, pcbParamDef, pibScale, pfNullable);
-	ODBC_ENTER_HSTMT;
-	odbc_errs_add(&stmt->errs, "HYC00", "SQLDescribeParam: function not implemented");
+
+	/* check if prepared statement is a stored procedure */
+	/* if so, use sp_sproc_columns */
+
+	/* otherwise, we have a parameterized statement */
+	/* replace the '?' parameter markers with '@pNNN' */
+	/* call sp_describe_undeclared_parameters */
+
+	switch(ipar) {
+		case 1:
+			*pfSqlType = SQL_INTEGER;
+			*pcbParamDef = 10;
+			*pibScale = 0;
+			*pfNullable = SQL_NO_NULLS;
+			break;
+		case 2:
+			*pfSqlType = SQL_WVARCHAR;
+			*pcbParamDef = 30;
+			*pibScale = 0;
+			*pfNullable = SQL_NO_NULLS;
+			break;
+		default:
+			odbc_errs_add(&stmt->errs, "07009", "Invalid descriptor index");
+			ODBC_EXIT(stmt, SQL_ERROR);
+	}
+
 	ODBC_EXIT_(stmt);
 }
-#endif
 
 
 SQLRETURN ODBC_PUBLIC ODBC_API
@@ -5216,7 +5239,7 @@ SQLGetFunctions(SQLHDBC hdbc, SQLUSMALLINT fFunction, SQLUSMALLINT FAR * pfExist
 	API_X(SQL_API_SQLCONNECT)\
 	API3X(SQL_API_SQLCOPYDESC)\
 	API_X(SQL_API_SQLDESCRIBECOL)\
-	API__(SQL_API_SQLDESCRIBEPARAM)\
+	API_X(SQL_API_SQLDESCRIBEPARAM)\
 	API_X(SQL_API_SQLDISCONNECT)\
 	API_X(SQL_API_SQLDRIVERCONNECT)\
 	API3X(SQL_API_SQLENDTRAN)\
