@@ -713,7 +713,7 @@ replace_sql_param_markers(char *sql_in) {
 	/* Replace ODBC parameter markers (?)
 	 * with MSSQL parameter markers (@pNNNN)
 	 */
-	size_t out_len = strlen(sql_in) + numParams * 6;
+	//size_t out_len = strlen(sql_in) + numParams * 6;
 	char *sql_out;
 }
 
@@ -738,15 +738,15 @@ SQLDescribeParam(SQLHSTMT hstmt, SQLUSMALLINT ipar, SQLSMALLINT FAR * pfSqlType,
 	switch(ipar) {
 		case 1:
 			*pfSqlType = SQL_INTEGER;
-			*pcbParamDef = 10;
-			*pibScale = 0;
+			*pcbParamDef = 0UL;
+			*pibScale = 10;
 			*pfNullable = SQL_NO_NULLS;
 			break;
 		case 2:
 			*pfSqlType = SQL_WVARCHAR;
-			*pcbParamDef = 30;
+			*pcbParamDef = 30UL;
 			*pibScale = 0;
-			*pfNullable = SQL_NO_NULLS;
+			*pfNullable = SQL_NULLABLE;
 			break;
 		default:
 			odbc_errs_add(&stmt->errs, "07009", "Invalid descriptor index");
