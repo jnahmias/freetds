@@ -713,7 +713,12 @@ SQLDescribeParam(SQLHSTMT hstmt, SQLUSMALLINT ipar, SQLSMALLINT FAR * pfSqlType,
 		 SQLSMALLINT FAR * pibScale, SQLSMALLINT FAR * pfNullable)
 {
 	char *new_sql;
-	int retcode;
+	SQLCHAR udt[512+1]; /* for suggested_user_type_name which is nvarchar(128) */
+	SQLCHAR sdt[1024+1]; /* for suggested_system_type_name which is nvarchar(256) */
+	TDS_STMT *dp = SQL_NULL_HSTMT;
+	SQLLEN udt_ind = 0, sdt_ind = 0; /* lengths or NULL indicators */
+	SQLRETURN rc;
+
 	ODBC_ENTER_HSTMT;
 	tdsdump_log(TDS_DBG_FUNC, "SQLDescribeParam(%p, %d, %p, %p, %p, %p)\n", 
 			hstmt, ipar, pfSqlType, pcbParamDef, pibScale, pfNullable);
@@ -724,22 +729,27 @@ SQLDescribeParam(SQLHSTMT hstmt, SQLUSMALLINT ipar, SQLSMALLINT FAR * pfSqlType,
 		ODBC_EXIT(stmt, SQL_ERROR);
 	}
 
-#if 0
 	/* replace the '?' parameter markers with '@pNNN' */
-	new_sql = tds5_fix_dot_query(tds_dstr_cstr(&stmt->query), tds_dstr_len(&stmt->query), stmt->params);
-	tdsdump_log(TDS_DBG_INFO1, "SQLDescribeParam: rewrote query as '%s'.\n", new_sql);
-#endif
-	new_sql = "INSERT INTO t (i,v) VALUES (@p001, @p002)";
+	tdsdump_log(TDS_DBG_INFO1, "SQLDescribeParam(): need to convert query '%s'.\n", tds_dstr_cstr(&stmt->query));
+	//new_sql = tds5_fix_dot_query(tds_dstr_cstr(&stmt->query), &query_len, stmt->params);
+	new_sql = "INSERT INTO descparam01 (i,v) VALUES (@p001, @p002)";
+	tdsdump_log(TDS_DBG_INFO1, "SQLDescribeParam(): rewrote query as '%s'.\n", new_sql);
 
 	/* call sp_describe_undeclared_parameters on the rewritten SQL */
-	retcode = odbc_stat_execute(stmt _wide0, "sp_describe_undeclared_parameters", 1,
+	rc = odbc_SQLAllocStmt(stmt->dbc, (SQLHSTMT FAR *) &dp);
+	rc = odbc_stat_execute(dp _wide0, "sp_describe_undeclared_parameters", 1,
 				"O@tsql", new_sql, strlen(new_sql));
-	if (! SQL_SUCCEEDED(retcode))
-		odbc_errs_add(&stmt->errs, "07009", "Invalid descriptor index");
-		ODBC_EXIT(stmt, SQL_ERROR);
+	tdsdump_log(TDS_DBG_INFO1, "SQLDescribeParam(): sp_describe_undeclared_parameters returned %d.\n", rc);
+	/* move to the row with data for the column we want [SQLSetPos] */
+	for (int i = 0; i < ipar; ++i) {
+		rc = odbc_SQLFetch(dp, SQL_FETCH_NEXT, 0);
+		if (TDS_FAILED(rc)) {
+			tdsdump_log(TDS_DBG_INFO1, "SQLDescribeParam(): odbc_SQLFetch failed %d.\n", rc);
+			odbc_SQLFreeStmt(dp, SQL_DROP, 0);
+			odbc_errs_add(&stmt->errs, "HY000", "Couldn't get to needed row");
+			ODBC_EXIT_(stmt);
+		}
 	}
-	/* move to the row with data for the column we want */
-	for (int i = 0; i < ipar; ++i) { CHKFetch("S"); }
 	/**
 	 * Validate the following:
 	 *  parameter_ordinal == ipar
@@ -750,8 +760,16 @@ SQLDescribeParam(SQLHSTMT hstmt, SQLUSMALLINT ipar, SQLSMALLINT FAR * pfSqlType,
 	 *  suggested_scale => pibScale
 	 *  ... => pfNullable
 	 **/
-	CHKGetData();
-	odbc_reset_statement();
+	/* check if column has a user-defined datatype */
+	rc = SQLGetData(dp,  4 /* suggested_system_type_name */
+			, SQL_C_CHAR, &sdt, sizeof(sdt) / sizeof(sdt[0]), &sdt_ind);
+	tdsdump_log(TDS_DBG_INFO1, "SQLDescribeParam: Param #%d returned %s for sdt.\n"
+			, ipar, (sdt_ind==SQL_NULL_DATA) ? "NULL": "non-NULL");
+	rc = SQLGetData(dp, 11 /* suggested_user_type_name */
+			, SQL_C_CHAR, &udt, sizeof(udt) / sizeof(udt[0]), &udt_ind);
+	tdsdump_log(TDS_DBG_INFO1, "SQLDescribeParam: Param #%d returned %s for udt.\n"
+			, ipar, (udt_ind==SQL_NULL_DATA) ? "NULL": "non-NULL");
+	odbc_SQLFreeStmt(dp, SQL_DROP, 0);
 	//free(new_sql);
 
 	switch(ipar) {
