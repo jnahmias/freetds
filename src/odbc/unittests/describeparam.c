@@ -27,9 +27,10 @@ int main(void)
 		return 77;
 	}
 
-	odbc_command("CREATE TABLE #t (i int PRIMARY KEY, v nvarchar(30))");
+	odbc_command("IF OBJECT_ID('descparam01') IS NOT NULL DROP TABLE descparam01");
+	odbc_command("CREATE TABLE descparam01 (i int PRIMARY KEY, v nvarchar(30))");
 	odbc_reset_statement();
-	CHKPrepare(T("INSERT INTO #t (i, v) VALUES (?, ?)"), SQL_NTS, "S");
+	CHKPrepare(T("INSERT INTO descparam01 (i, v) VALUES (?, ?)"), SQL_NTS, "S");
 
 	CHKDescribeParam((SQLUSMALLINT) 1, &DataType, &ParamSize, &Scale, &Nullable, "S");
 	CHECK_VARIABLE_VALUE(DataType, SQL_INTEGER, "Param #1: wrong DataType %d, should be %d.\n")
@@ -44,7 +45,7 @@ int main(void)
 	CHECK_VARIABLE_VALUE(Nullable, SQL_NULLABLE, "Param #2: wrong Nullity %d, should be %d.\n")
 
 	odbc_reset_statement();
-	odbc_command("drop table #t");
+	odbc_command("DROP TABLE descparam01");
 	odbc_disconnect();
 	fprintf(stderr, "Test Complete.\n");
 	return rc;

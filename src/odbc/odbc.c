@@ -708,19 +708,12 @@ ODBC_FUNC(SQLColumnPrivileges, (P(SQLHSTMT,hstmt), PCHARIN(CatalogName,SQLSMALLI
 	ODBC_EXIT_(stmt);
 }
 
-static char *
-replace_sql_param_markers(char *sql_in) {
-	/* Replace ODBC parameter markers (?)
-	 * with MSSQL parameter markers (@pNNNN)
-	 */
-	//size_t out_len = strlen(sql_in) + numParams * 6;
-	char *sql_out;
-}
-
 SQLRETURN ODBC_PUBLIC ODBC_API
 SQLDescribeParam(SQLHSTMT hstmt, SQLUSMALLINT ipar, SQLSMALLINT FAR * pfSqlType, SQLULEN FAR * pcbParamDef,
 		 SQLSMALLINT FAR * pibScale, SQLSMALLINT FAR * pfNullable)
 {
+	char *new_sql;
+	int retcode;
 	ODBC_ENTER_HSTMT;
 	tdsdump_log(TDS_DBG_FUNC, "SQLDescribeParam(%p, %d, %p, %p, %p, %p)\n", 
 			hstmt, ipar, pfSqlType, pcbParamDef, pibScale, pfNullable);
@@ -731,9 +724,35 @@ SQLDescribeParam(SQLHSTMT hstmt, SQLUSMALLINT ipar, SQLSMALLINT FAR * pfSqlType,
 		ODBC_EXIT(stmt, SQL_ERROR);
 	}
 
-	/* otherwise, we have a parameterized statement */
+#if 0
 	/* replace the '?' parameter markers with '@pNNN' */
-	/* call sp_describe_undeclared_parameters */
+	new_sql = tds5_fix_dot_query(tds_dstr_cstr(&stmt->query), tds_dstr_len(&stmt->query), stmt->params);
+	tdsdump_log(TDS_DBG_INFO1, "SQLDescribeParam: rewrote query as '%s'.\n", new_sql);
+#endif
+	new_sql = "INSERT INTO t (i,v) VALUES (@p001, @p002)";
+
+	/* call sp_describe_undeclared_parameters on the rewritten SQL */
+	retcode = odbc_stat_execute(stmt _wide0, "sp_describe_undeclared_parameters", 1,
+				"O@tsql", new_sql, strlen(new_sql));
+	if (! SQL_SUCCEEDED(retcode))
+		odbc_errs_add(&stmt->errs, "07009", "Invalid descriptor index");
+		ODBC_EXIT(stmt, SQL_ERROR);
+	}
+	/* move to the row with data for the column we want */
+	for (int i = 0; i < ipar; ++i) { CHKFetch("S"); }
+	/**
+	 * Validate the following:
+	 *  parameter_ordinal == ipar
+	 *  name == "@p%03d"
+	 * Map returned columns as follows:
+	 *  suggested_system_type_id => pfSqlType
+	 *  suggested_max_length => pcbParamDef
+	 *  suggested_scale => pibScale
+	 *  ... => pfNullable
+	 **/
+	CHKGetData();
+	odbc_reset_statement();
+	//free(new_sql);
 
 	switch(ipar) {
 		case 1:
@@ -749,8 +768,6 @@ SQLDescribeParam(SQLHSTMT hstmt, SQLUSMALLINT ipar, SQLSMALLINT FAR * pfSqlType,
 			*pfNullable = SQL_NULLABLE;
 			break;
 		default:
-			odbc_errs_add(&stmt->errs, "07009", "Invalid descriptor index");
-			ODBC_EXIT(stmt, SQL_ERROR);
 	}
 
 	ODBC_EXIT_(stmt);
