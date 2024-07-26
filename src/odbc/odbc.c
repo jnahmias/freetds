@@ -777,18 +777,34 @@ SQLDescribeParam(SQLHSTMT hstmt, SQLUSMALLINT ipar, SQLSMALLINT FAR * pfSqlType,
 		ODBC_EXIT(stmt, SQL_ERROR);
 	}
 
-	/* replace the '?' parameter markers with '@pNNN' */
-	tdsdump_log(TDS_DBG_INFO1, "SQLDescribeParam(): need to convert query '%s'.\n", tds_dstr_cstr(&stmt->query));
-	//new_sql = tds5_fix_dot_query(tds_dstr_cstr(&stmt->query), &query_len, stmt->params);
-	new_sql = "INSERT INTO descparam01 (i,v) VALUES (@p001, @p002)";
-	tdsdump_log(TDS_DBG_INFO1, "SQLDescribeParam(): rewrote query as '%s'.\n", new_sql);
-
+	/* replace the '?' parameter markers with '@pNNN' and then */
 	/* call sp_describe_undeclared_parameters on the rewritten SQL */
+	new_sql = transform_query_params(tds_dstr_cstr(&stmt->query));
+	if (new_sql == NULL) {
+		odbc_errs_add(&stmt->errs, "HY000", "Couldn't transform query parameters");
+		ODBC_EXIT_(stmt);
+	}
+
 	rc = odbc_SQLAllocStmt(stmt->dbc, (SQLHSTMT FAR *) &dp);
+	if (!SQL_SUCCEEDED(rc)) {
+		tdsdump_log(TDS_DBG_INFO1, "SQLDescribeParam(): odbc_SQLAllocStmt failed %d.\n", rc);
+		free(new_sql);
+		odbc_SQLFreeStmt(dp, SQL_DROP, 0);
+		odbc_errs_add(&stmt->errs, "HY000", "Couldn't create statement");
+		ODBC_EXIT_(stmt);
+	}
 	rc = odbc_stat_execute(dp _wide0, "sp_describe_undeclared_parameters", 1,
 				"O@tsql", new_sql, strlen(new_sql));
-	tdsdump_log(TDS_DBG_INFO1, "SQLDescribeParam(): sp_describe_undeclared_parameters returned %d.\n", rc);
-	/* move to the row with data for the column we want [SQLSetPos] */
+	if (!SQL_SUCCEEDED(rc)) {
+		tdsdump_log(TDS_DBG_INFO1, "SQLDescribeParam(): odbc_stat_execute failed %d.\n", rc);
+		free(new_sql);
+		odbc_SQLFreeStmt(dp, SQL_DROP, 0);
+		odbc_errs_add(&stmt->errs, "HY000", "Couldn't retrieve parameter info");
+		ODBC_EXIT_(stmt);
+	}
+	free(new_sql);
+
+	/* move to the row with data for the column we want */
 	for (int i = 0; i < ipar; ++i) {
 		rc = odbc_SQLFetch(dp, SQL_FETCH_NEXT, 0);
 		if (TDS_FAILED(rc)) {
@@ -798,6 +814,7 @@ SQLDescribeParam(SQLHSTMT hstmt, SQLUSMALLINT ipar, SQLSMALLINT FAR * pfSqlType,
 			ODBC_EXIT_(stmt);
 		}
 	}
+
 	/**
 	 * Validate the following:
 	 *  parameter_ordinal == ipar
@@ -818,7 +835,6 @@ SQLDescribeParam(SQLHSTMT hstmt, SQLUSMALLINT ipar, SQLSMALLINT FAR * pfSqlType,
 	tdsdump_log(TDS_DBG_INFO1, "SQLDescribeParam: Param #%d returned %s for udt.\n"
 			, ipar, (udt_ind==SQL_NULL_DATA) ? "NULL": "non-NULL");
 	odbc_SQLFreeStmt(dp, SQL_DROP, 0);
-	//free(new_sql);
 
 	switch(ipar) {
 		case 1:
