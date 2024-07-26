@@ -708,6 +708,54 @@ ODBC_FUNC(SQLColumnPrivileges, (P(SQLHSTMT,hstmt), PCHARIN(CatalogName,SQLSMALLI
 	ODBC_EXIT_(stmt);
 }
 
+/**
+ * Transforms ODBC-style query parameters `?` to MSSQL-style `@pNNN`.
+ * returns a new query string -- remember to free() when done.
+ * returns NULL on error -- remember to check!
+ **/
+static char *
+transform_query_params(const char *query_in) {
+	char *out = NULL;
+	const char *s = query_in, *e = NULL;
+	size_t len = 0, pos = 0, size;
+	int n = 0;
+
+	tdsdump_log(TDS_DBG_FUNC, "transform_query_params(%s)\n", query_in);
+	if (query_in == NULL)
+		return NULL;
+
+	size = 1 + strlen(query_in);
+	out = tds_new(char, size);
+	if (!out)
+		return NULL;
+
+	while (e = tds_next_placeholder(s)) {
+		n++;
+		if (n > 999) {
+			tdsdump_log(TDS_DBG_INFO1, "transform_query_params(): found more than 999 params, bailing out!\n");
+			free(out);
+			return NULL;
+		}
+		size += 4;	/* difference in length between "@pNNN" and "?" */
+		if (!TDS_RESIZE(out, size)) {
+			free(out);
+			return NULL;
+		}
+		len =  e - s;
+		strncpy( out+pos, s, len );
+		pos += len;
+		pos += sprintf( out+pos, "@p%03d", n);
+		s = e + 1;
+		out[pos] = '\0';
+	}
+	/* copy remaining string */
+	len = strlen(s);
+	strncpy( out+pos, s, len );
+	out[pos+len] = '\0';
+
+	return out;
+}
+
 SQLRETURN ODBC_PUBLIC ODBC_API
 SQLDescribeParam(SQLHSTMT hstmt, SQLUSMALLINT ipar, SQLSMALLINT FAR * pfSqlType, SQLULEN FAR * pcbParamDef,
 		 SQLSMALLINT FAR * pibScale, SQLSMALLINT FAR * pfNullable)
