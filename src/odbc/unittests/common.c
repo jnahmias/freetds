@@ -153,6 +153,7 @@ odbc_read_login_info(void)
 	strcpy(odbc_driver, path);
 
 	s1 = getenv("TDSINIOVERRIDE");
+	fprintf(stderr, "Got TDSINIOVERRIDE='%s'.\n", s1);
 	if (s1 && atoi(s1) == 0)
 		ini_override = 0;
 
@@ -161,6 +162,7 @@ odbc_read_login_info(void)
 	sprintf(path, "odbc.ini.%d", (int) getpid());
 	in = fopen(path, "w");
 	if (in) {
+		fprintf(stderr, "Writing local odbc.ini:\n[%s]\nDriver = %s\nDatabase = %s\nServername = %s\n--EOF--\n", odbc_server, odbc_driver, odbc_database, odbc_server);
 		fprintf(in, "[%s]\nDriver = %s\nDatabase = %s\nServername = %s\n", odbc_server, odbc_driver, odbc_database, odbc_server);
 		fclose(in);
 		if (ini_override) {
@@ -280,6 +282,7 @@ odbc_connect(void)
 		assert(asprintf(&params, "DSN=%s;UID=%s;PWD=%s;DATABASE=%s;%s",
 				odbc_server, odbc_user, odbc_password, odbc_database, odbc_conn_additional_params) >= 0);
 		assert(params);
+		printf("using connection string = '%s'.\n", params);
 		CHKDriverConnect(NULL, T(params), SQL_NTS, (SQLTCHAR *) command, sizeof(command)/sizeof(SQLTCHAR),
 				 &len, SQL_DRIVER_NOPROMPT, "SI");
 		free(params);

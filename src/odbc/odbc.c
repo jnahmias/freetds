@@ -801,6 +801,22 @@ SQLDescribeParam(SQLHSTMT hstmt, SQLUSMALLINT ipar, SQLSMALLINT FAR * pfSqlType,
 		odbc_errs_add(&stmt->errs, "HY000", "Couldn't create statement");
 		ODBC_EXIT_(stmt);
 	}
+	rc = odbc_SQLSetStmtAttr(dp, SQL_ATTR_CURSOR_SENSITIVITY, SQL_INSENSITIVE, 0 _wide0);
+	if (!SQL_SUCCEEDED(rc)) {
+		tdsdump_log(TDS_DBG_INFO1, "SQLDescribeParam(): odbc_SQLSetStmtAttr failed %d.\n", rc);
+		free(new_sql);
+		odbc_SQLFreeStmt(dp, SQL_DROP, 0);
+		odbc_errs_add(&stmt->errs, "HY000", "Couldn't set statement cursor to SQL_INSENSITIVE");
+		ODBC_EXIT_(stmt);
+	}
+	rc = odbc_SQLSetStmtAttr(dp, SQL_ATTR_CURSOR_SCROLLABLE, SQL_SCROLLABLE, 0 _wide0);
+	if (!SQL_SUCCEEDED(rc)) {
+		tdsdump_log(TDS_DBG_INFO1, "SQLDescribeParam(): odbc_SQLSetStmtAttr failed %d.\n", rc);
+		free(new_sql);
+		odbc_SQLFreeStmt(dp, SQL_DROP, 0);
+		odbc_errs_add(&stmt->errs, "HY000", "Couldn't set statement cursor to SQL_SCROLLABLE");
+		ODBC_EXIT_(stmt);
+	}
 	rc = odbc_stat_execute(dp _wide0, "sp_describe_undeclared_parameters", 1,
 				"O@tsql", new_sql, strlen(new_sql));
 	if (!SQL_SUCCEEDED(rc)) {
@@ -810,36 +826,73 @@ SQLDescribeParam(SQLHSTMT hstmt, SQLUSMALLINT ipar, SQLSMALLINT FAR * pfSqlType,
 		odbc_errs_add(&stmt->errs, "HY000", "Couldn't retrieve parameter info");
 		ODBC_EXIT_(stmt);
 	}
-	free(new_sql);
+	/* free(new_sql); */
+	tdsdump_log(TDS_DBG_INFO1, "SQLDescribeParam(): odbc_stat_execute finished with rc=%d.\n", rc);
+	tdsdump_log(TDS_DBG_INFO1, "SQLDescribeParam(): dp=%p, NULL=%p.\n", dp, SQL_NULL_HSTMT);
+	tdsdump_log(TDS_DBG_INFO1, "SQLDescribeParam(): dp->htype=%d, HSTMT=%d.\n", dp->htype, SQL_HANDLE_STMT);
 
 	/* bind vars for result columns we want and then move to the row */
 	/* describing the parameter we're interested in */
-	rc = SQLBindCol(dp, 11 /* suggested_user_type_name */
+	rc = odbc_SQLFetch(dp, SQL_FETCH_ABSOLUTE, ipar);
+	if (!SQL_SUCCEEDED(rc)) {
+		tdsdump_log(TDS_DBG_INFO1, "SQLDescribeParam(): SQLFetch failed %d.\n", rc);
+		odbc_SQLFreeStmt(dp, SQL_DROP, 0);
+		odbc_errs_add(&stmt->errs, "HY000", "Couldn't get to needed row");
+		ODBC_EXIT_(stmt);
+	}
+	rc = SQLGetData(dp, 11 /* suggested_user_type_name */
 			, SQL_C_CHAR /* sysname */
 			, udt, sizeof(udt)/sizeof(udt[0]), &udt_ind);
+	if (!SQL_SUCCEEDED(rc)) {
+		tdsdump_log(TDS_DBG_INFO1, "SQLDescribeParam(): SQLBindCol(11) failed %d.\n", rc);
+		odbc_SQLFreeStmt(dp, SQL_DROP, 0);
+		odbc_errs_add(&stmt->errs, "HY000", "Couldn't bind to suggested_user_type_name");
+		ODBC_EXIT_(stmt);
+	}
 	rc = SQLBindCol(dp, 7 /* suggested_scale */
 			, SQL_C_STINYINT /* tinyint */
 			, &scale, sizeof(scale), &scale_ind);
+	if (!SQL_SUCCEEDED(rc)) {
+		tdsdump_log(TDS_DBG_INFO1, "SQLDescribeParam(): SQLBindCol(7) failed %d.\n", rc);
+		odbc_SQLFreeStmt(dp, SQL_DROP, 0);
+		odbc_errs_add(&stmt->errs, "HY000", "Couldn't bind to suggested_scale");
+		ODBC_EXIT_(stmt);
+	}
 	rc = SQLBindCol(dp, 5 /* suggested_max_length */
 			, SQL_C_SSHORT /* smallint */
 			, &max_len, sizeof(max_len), &maxlen_ind);
+	if (!SQL_SUCCEEDED(rc)) {
+		tdsdump_log(TDS_DBG_INFO1, "SQLDescribeParam(): SQLBindCol(5) failed %d.\n", rc);
+		odbc_SQLFreeStmt(dp, SQL_DROP, 0);
+		odbc_errs_add(&stmt->errs, "HY000", "Couldn't bind to suggested_max_length");
+		ODBC_EXIT_(stmt);
+	}
 	rc = SQLBindCol(dp, 4 /* suggested_system_type_name */
 			, SQL_C_CHAR /* nvarchar(256) */
 			, sdt, sizeof(sdt)/sizeof(sdt[0]), &sdt_ind);
+	if (!SQL_SUCCEEDED(rc)) {
+		tdsdump_log(TDS_DBG_INFO1, "SQLDescribeParam(): SQLBindCol(4) failed %d.\n", rc);
+		odbc_SQLFreeStmt(dp, SQL_DROP, 0);
+		odbc_errs_add(&stmt->errs, "HY000", "Couldn't bind to suggested_system_type_name");
+		ODBC_EXIT_(stmt);
+	}
 	rc = SQLBindCol(dp, 2 /* name */
 			, SQL_C_CHAR /* sysname [nvarchar(128)] */
 			, pname, sizeof(pname)/sizeof(pname[0]), &pname_ind);
+	if (!SQL_SUCCEEDED(rc)) {
+		tdsdump_log(TDS_DBG_INFO1, "SQLDescribeParam(): SQLBindCol(2) failed %d.\n", rc);
+		odbc_SQLFreeStmt(dp, SQL_DROP, 0);
+		odbc_errs_add(&stmt->errs, "HY000", "Couldn't bind to name");
+		ODBC_EXIT_(stmt);
+	}
 	rc = SQLBindCol(dp, 1 /* parameter_ordinal */
 			, SQL_C_SLONG /* int */
 			, &pnum, sizeof(pnum), &pnum_ind);
-	for (int i = 0; i < ipar; ++i) {
-		rc = SQLFetch(dp);
-		if (!SQL_SUCCEEDED(rc)) {
-			tdsdump_log(TDS_DBG_INFO1, "SQLDescribeParam(): SQLFetch failed %d.\n", rc);
-			odbc_SQLFreeStmt(dp, SQL_DROP, 0);
-			odbc_errs_add(&stmt->errs, "HY000", "Couldn't get to needed row");
-			ODBC_EXIT_(stmt);
-		}
+	if (!SQL_SUCCEEDED(rc)) {
+		tdsdump_log(TDS_DBG_INFO1, "SQLDescribeParam(): SQLBindCol(1) failed %d.\n", rc);
+		odbc_SQLFreeStmt(dp, SQL_DROP, 0);
+		odbc_errs_add(&stmt->errs, "HY000", "Couldn't bind to parameter_ordinal");
+		ODBC_EXIT_(stmt);
 	}
 	tdsdump_log(TDS_DBG_INFO1, "SQLDescribeParam: Row #%d: pnum=%d, pname='%s'"
 			", sdt='%s', max_len=%d, scale=%d, udt='%s'.\n"
@@ -2093,9 +2146,12 @@ SQLBindCol(SQLHSTMT hstmt, SQLUSMALLINT icol, SQLSMALLINT fCType, SQLPOINTER rgb
 	SQLSMALLINT orig_ard_size;
 
 	ODBC_ENTER_HSTMT;
+	tdsdump_log(TDS_DBG_INFO1, "SQLBindCol(): test0\n");
 
 	tdsdump_log(TDS_DBG_FUNC, "SQLBindCol(%p, %d, %d, %p, %d, %p)\n", 
 			hstmt, icol, fCType, rgbValue, (int)cbValueMax, pcbValue);
+
+	tdsdump_log(TDS_DBG_INFO1, "SQLBindCol(): test2\n");
 
 	/* TODO - More error checking XXX smurph */
 
