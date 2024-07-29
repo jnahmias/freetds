@@ -729,7 +729,7 @@ transform_query_params(const char *query_in) {
 	if (!out)
 		return NULL;
 
-	while (e = tds_next_placeholder(s)) {
+	while ( (e=tds_next_placeholder(s)) ) {
 		n++;
 		if (n > 999) {
 			tdsdump_log(TDS_DBG_INFO1, "transform_query_params(): found more than 999 params, bailing out!\n");
@@ -761,11 +761,17 @@ SQLDescribeParam(SQLHSTMT hstmt, SQLUSMALLINT ipar, SQLSMALLINT FAR * pfSqlType,
 		 SQLSMALLINT FAR * pibScale, SQLSMALLINT FAR * pfNullable)
 {
 	char *new_sql;
-	SQLCHAR udt[512+1]; /* for suggested_user_type_name which is nvarchar(128) */
-	SQLCHAR sdt[1024+1]; /* for suggested_system_type_name which is nvarchar(256) */
 	TDS_STMT *dp = SQL_NULL_HSTMT;
-	SQLLEN udt_ind = 0, sdt_ind = 0; /* lengths or NULL indicators */
+	SQLINTEGER pnum;	/* parameter_ordinal int */
+	SQLCHAR pname[512+1];	/* name sysname == nvarchar(128) */
+	SQLCHAR sdt[1024+1];	/* suggested_system_type_name nvarchar(256) */
+	SQLSMALLINT max_len;	/* suggested_max_length smallint */
+	SQLSCHAR scale;		/* suggested_scale tinyint */
+	SQLCHAR udt[512+1];	/* suggested_user_type_name nvarchar(128) */
 	SQLRETURN rc;
+	/* lengths or NULL indicators */
+	SQLLEN pnum_ind = 0, pname_ind = 0, sdt_ind = 0, maxlen_ind = 0
+		, scale_ind = 0, udt_ind = 0;
 
 	ODBC_ENTER_HSTMT;
 	tdsdump_log(TDS_DBG_FUNC, "SQLDescribeParam(%p, %d, %p, %p, %p, %p)\n", 
@@ -779,12 +785,14 @@ SQLDescribeParam(SQLHSTMT hstmt, SQLUSMALLINT ipar, SQLSMALLINT FAR * pfSqlType,
 
 	/* replace the '?' parameter markers with '@pNNN' and then */
 	/* call sp_describe_undeclared_parameters on the rewritten SQL */
+	strcpy(udt, "suggested_user_type_name");
+	strcpy(sdt, "suggested_system_type_name");
+	strcpy(pname, "name_of_parameter_to_describe");
 	new_sql = transform_query_params(tds_dstr_cstr(&stmt->query));
 	if (new_sql == NULL) {
 		odbc_errs_add(&stmt->errs, "HY000", "Couldn't transform query parameters");
 		ODBC_EXIT_(stmt);
 	}
-
 	rc = odbc_SQLAllocStmt(stmt->dbc, (SQLHSTMT FAR *) &dp);
 	if (!SQL_SUCCEEDED(rc)) {
 		tdsdump_log(TDS_DBG_INFO1, "SQLDescribeParam(): odbc_SQLAllocStmt failed %d.\n", rc);
@@ -804,16 +812,39 @@ SQLDescribeParam(SQLHSTMT hstmt, SQLUSMALLINT ipar, SQLSMALLINT FAR * pfSqlType,
 	}
 	free(new_sql);
 
-	/* move to the row with data for the column we want */
+	/* bind vars for result columns we want and then move to the row */
+	/* describing the parameter we're interested in */
+	rc = SQLBindCol(dp, 11 /* suggested_user_type_name */
+			, SQL_C_CHAR /* sysname */
+			, udt, sizeof(udt)/sizeof(udt[0]), &udt_ind);
+	rc = SQLBindCol(dp, 7 /* suggested_scale */
+			, SQL_C_STINYINT /* tinyint */
+			, &scale, sizeof(scale), &scale_ind);
+	rc = SQLBindCol(dp, 5 /* suggested_max_length */
+			, SQL_C_SSHORT /* smallint */
+			, &max_len, sizeof(max_len), &maxlen_ind);
+	rc = SQLBindCol(dp, 4 /* suggested_system_type_name */
+			, SQL_C_CHAR /* nvarchar(256) */
+			, sdt, sizeof(sdt)/sizeof(sdt[0]), &sdt_ind);
+	rc = SQLBindCol(dp, 2 /* name */
+			, SQL_C_CHAR /* sysname [nvarchar(128)] */
+			, pname, sizeof(pname)/sizeof(pname[0]), &pname_ind);
+	rc = SQLBindCol(dp, 1 /* parameter_ordinal */
+			, SQL_C_SLONG /* int */
+			, &pnum, sizeof(pnum), &pnum_ind);
 	for (int i = 0; i < ipar; ++i) {
-		rc = odbc_SQLFetch(dp, SQL_FETCH_NEXT, 0);
-		if (TDS_FAILED(rc)) {
-			tdsdump_log(TDS_DBG_INFO1, "SQLDescribeParam(): odbc_SQLFetch failed %d.\n", rc);
+		rc = SQLFetch(dp);
+		if (!SQL_SUCCEEDED(rc)) {
+			tdsdump_log(TDS_DBG_INFO1, "SQLDescribeParam(): SQLFetch failed %d.\n", rc);
 			odbc_SQLFreeStmt(dp, SQL_DROP, 0);
 			odbc_errs_add(&stmt->errs, "HY000", "Couldn't get to needed row");
 			ODBC_EXIT_(stmt);
 		}
 	}
+	tdsdump_log(TDS_DBG_INFO1, "SQLDescribeParam: Row #%d: pnum=%d, pname='%s'"
+			", sdt='%s', max_len=%d, scale=%d, udt='%s'.\n"
+			, ipar, pnum, pname, sdt, max_len, scale, udt);
+	odbc_SQLFreeStmt(dp, SQL_DROP, 0);
 
 	/**
 	 * Validate the following:
@@ -826,15 +857,6 @@ SQLDescribeParam(SQLHSTMT hstmt, SQLUSMALLINT ipar, SQLSMALLINT FAR * pfSqlType,
 	 *  ... => pfNullable
 	 **/
 	/* check if column has a user-defined datatype */
-	rc = SQLGetData(dp,  4 /* suggested_system_type_name */
-			, SQL_C_CHAR, &sdt, sizeof(sdt) / sizeof(sdt[0]), &sdt_ind);
-	tdsdump_log(TDS_DBG_INFO1, "SQLDescribeParam: Param #%d returned %s for sdt.\n"
-			, ipar, (sdt_ind==SQL_NULL_DATA) ? "NULL": "non-NULL");
-	rc = SQLGetData(dp, 11 /* suggested_user_type_name */
-			, SQL_C_CHAR, &udt, sizeof(udt) / sizeof(udt[0]), &udt_ind);
-	tdsdump_log(TDS_DBG_INFO1, "SQLDescribeParam: Param #%d returned %s for udt.\n"
-			, ipar, (udt_ind==SQL_NULL_DATA) ? "NULL": "non-NULL");
-	odbc_SQLFreeStmt(dp, SQL_DROP, 0);
 
 	switch(ipar) {
 		case 1:

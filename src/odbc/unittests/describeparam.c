@@ -15,7 +15,10 @@ int main(void)
 	SQLSMALLINT DataType, Scale, Nullable;
 	SQLULEN ParamSize;
 
+	odbc_use_version3 = 1;
+	odbc_conn_additional_params = "ClientCharset=UTF-8;";
 	odbc_connect();
+
 	if ( !odbc_driver_is_freetds()
 	  || !odbc_db_is_microsoft()
 	  ||  odbc_db_version_int() < MSSQL_2012_VER
