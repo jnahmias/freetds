@@ -157,6 +157,8 @@ odbc_col_setname(TDS_STMT * stmt, int colpos, const char *name)
 	TDSRESULTINFO *resinfo;
 #endif
 
+	tdsdump_log(TDS_DBG_FUNC, "odbc_col_setname(%p,%d,\"%s\")\n", stmt, colpos, name);
+
 	IRD_CHECK;
 
 #if ENABLE_EXTRA_CHECKS
@@ -761,6 +763,7 @@ SQLDescribeParam(SQLHSTMT hstmt, SQLUSMALLINT ipar, SQLSMALLINT FAR * pfSqlType,
 		 SQLSMALLINT FAR * pibScale, SQLSMALLINT FAR * pfNullable)
 {
 	char *new_sql;
+	ODBC_PRRET_BUF;
 	TDS_STMT *dp = SQL_NULL_HSTMT;
 	SQLINTEGER pnum;	/* parameter_ordinal int */
 	SQLCHAR pname[512+1];	/* name sysname == nvarchar(128) */
@@ -785,21 +788,18 @@ SQLDescribeParam(SQLHSTMT hstmt, SQLUSMALLINT ipar, SQLSMALLINT FAR * pfSqlType,
 
 	/* replace the '?' parameter markers with '@pNNN' and then */
 	/* call sp_describe_undeclared_parameters on the rewritten SQL */
-	strcpy(udt, "suggested_user_type_name");
-	strcpy(sdt, "suggested_system_type_name");
-	strcpy(pname, "name_of_parameter_to_describe");
 	new_sql = transform_query_params(tds_dstr_cstr(&stmt->query));
 	if (new_sql == NULL) {
 		odbc_errs_add(&stmt->errs, "HY000", "Couldn't transform query parameters");
 		ODBC_EXIT_(stmt);
 	}
 	rc = odbc_SQLAllocStmt(stmt->dbc, (SQLHSTMT FAR *) &dp);
-	if (!SQL_SUCCEEDED(rc)) {
-		tdsdump_log(TDS_DBG_INFO1, "SQLDescribeParam(): odbc_SQLAllocStmt failed %d.\n", rc);
+	if (rc != SQL_SUCCESS) {
+		tdsdump_log(TDS_DBG_INFO1, "SQLDescribeParam(): SQLAllocStmt returned %s.\n", odbc_prret(rc));
 		free(new_sql);
 		odbc_SQLFreeStmt(dp, SQL_DROP, 0);
 		odbc_errs_add(&stmt->errs, "HY000", "Couldn't create statement");
-		ODBC_EXIT_(stmt);
+		ODBC_EXIT(stmt, rc);
 	}
 	rc = odbc_SQLSetStmtAttr(dp, SQL_ATTR_CURSOR_SENSITIVITY, SQL_INSENSITIVE, 0 _wide0);
 	if (!SQL_SUCCEEDED(rc)) {
@@ -819,12 +819,12 @@ SQLDescribeParam(SQLHSTMT hstmt, SQLUSMALLINT ipar, SQLSMALLINT FAR * pfSqlType,
 	}
 	rc = odbc_stat_execute(dp _wide0, "sp_describe_undeclared_parameters", 1,
 				"O@tsql", new_sql, strlen(new_sql));
-	if (!SQL_SUCCEEDED(rc)) {
+	free(new_sql);
+	if (rc != SQL_SUCCESS) {
 		tdsdump_log(TDS_DBG_INFO1, "SQLDescribeParam(): odbc_stat_execute failed %d.\n", rc);
-		free(new_sql);
 		odbc_SQLFreeStmt(dp, SQL_DROP, 0);
 		odbc_errs_add(&stmt->errs, "HY000", "Couldn't retrieve parameter info");
-		ODBC_EXIT_(stmt);
+		ODBC_EXIT(stmt, rc);
 	}
 	/* free(new_sql); */
 	tdsdump_log(TDS_DBG_INFO1, "SQLDescribeParam(): odbc_stat_execute finished with rc=%d.\n", rc);
@@ -888,12 +888,15 @@ SQLDescribeParam(SQLHSTMT hstmt, SQLUSMALLINT ipar, SQLSMALLINT FAR * pfSqlType,
 	rc = SQLBindCol(dp, 1 /* parameter_ordinal */
 			, SQL_C_SLONG /* int */
 			, &pnum, sizeof(pnum), &pnum_ind);
+<<<<<<< HEAD
 	if (!SQL_SUCCEEDED(rc)) {
 		tdsdump_log(TDS_DBG_INFO1, "SQLDescribeParam(): SQLBindCol(1) failed %d.\n", rc);
 		odbc_SQLFreeStmt(dp, SQL_DROP, 0);
 		odbc_errs_add(&stmt->errs, "HY000", "Couldn't bind to parameter_ordinal");
 		ODBC_EXIT_(stmt);
 	}
+=======
+>>>>>>> 94ee3d05 (wip - bind not working)
 	tdsdump_log(TDS_DBG_INFO1, "SQLDescribeParam: Row #%d: pnum=%d, pname='%s'"
 			", sdt='%s', max_len=%d, scale=%d, udt='%s'.\n"
 			, ipar, pnum, pname, sdt, max_len, scale, udt);
