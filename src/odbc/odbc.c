@@ -802,21 +802,30 @@ SQLDescribeParam(SQLHSTMT hstmt, SQLUSMALLINT ipar, SQLSMALLINT FAR * pfSqlType,
 		ODBC_EXIT(stmt, rc);
 	}
 	rc = odbc_SQLSetStmtAttr(dp, SQL_ATTR_CURSOR_SENSITIVITY, SQL_INSENSITIVE, 0 _wide0);
-	if (!SQL_SUCCEEDED(rc)) {
+	if (rc != SQL_SUCCESS) {
 		tdsdump_log(TDS_DBG_INFO1, "SQLDescribeParam(): odbc_SQLSetStmtAttr failed %d.\n", rc);
 		free(new_sql);
 		odbc_SQLFreeStmt(dp, SQL_DROP, 0);
 		odbc_errs_add(&stmt->errs, "HY000", "Couldn't set statement cursor to SQL_INSENSITIVE");
-		ODBC_EXIT_(stmt);
+		ODBC_EXIT(stmt, rc);
 	}
 	rc = odbc_SQLSetStmtAttr(dp, SQL_ATTR_CURSOR_SCROLLABLE, SQL_SCROLLABLE, 0 _wide0);
-	if (!SQL_SUCCEEDED(rc)) {
+	if (rc != SQL_SUCCESS) {
 		tdsdump_log(TDS_DBG_INFO1, "SQLDescribeParam(): odbc_SQLSetStmtAttr failed %d.\n", rc);
 		free(new_sql);
 		odbc_SQLFreeStmt(dp, SQL_DROP, 0);
 		odbc_errs_add(&stmt->errs, "HY000", "Couldn't set statement cursor to SQL_SCROLLABLE");
-		ODBC_EXIT_(stmt);
+		ODBC_EXIT(stmt, rc);
 	}
+	rc = SQLExecDirect(dp, new_sql, SQL_NTS);
+	if (rc != SQL_SUCCESS) {
+		tdsdump_log(TDS_DBG_INFO1, "SQLDescribeParam(): SQLExecDirect returned %s (%d).\n", odbc_prret(rc), rc);
+		odbc_SQLFreeStmt(dp, SQL_DROP, 0);
+		odbc_errs_add(&stmt->errs, "HY000", "Couldn't retrieve parameter info");
+		ODBC_EXIT(stmt, rc);
+	}
+	tdsdump_log(TDS_DBG_INFO1, "SQLDescribeParam(): SQLExecDirect finished with rc=%d.\n", rc);
+#if 0
 	rc = odbc_stat_execute(dp _wide0, "sp_describe_undeclared_parameters", 1,
 				"O@tsql", new_sql, strlen(new_sql));
 	free(new_sql);
@@ -849,14 +858,15 @@ SQLDescribeParam(SQLHSTMT hstmt, SQLUSMALLINT ipar, SQLSMALLINT FAR * pfSqlType,
 		odbc_errs_add(&stmt->errs, "HY000", "Couldn't bind to suggested_user_type_name");
 		ODBC_EXIT_(stmt);
 	}
+#endif
 	rc = SQLBindCol(dp, 7 /* suggested_scale */
 			, SQL_C_STINYINT /* tinyint */
 			, &scale, sizeof(scale), &scale_ind);
-	if (!SQL_SUCCEEDED(rc)) {
+	if (rc != SQL_SUCCESS) {
 		tdsdump_log(TDS_DBG_INFO1, "SQLDescribeParam(): SQLBindCol(7) failed %d.\n", rc);
 		odbc_SQLFreeStmt(dp, SQL_DROP, 0);
 		odbc_errs_add(&stmt->errs, "HY000", "Couldn't bind to suggested_scale");
-		ODBC_EXIT_(stmt);
+		ODBC_EXIT(stmt, rc);
 	}
 	rc = SQLBindCol(dp, 5 /* suggested_max_length */
 			, SQL_C_SSHORT /* smallint */
