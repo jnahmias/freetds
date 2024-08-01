@@ -752,7 +752,7 @@ transform_query_params(const char *query_in) {
 	}
 	/* copy remaining string */
 	len = strlen(s);
-	strncpy( out+pos, s, len );
+	strncpy( out+pos, s, size - pos );
 	out[pos+len] = '\0';
 
 	return out;
@@ -762,16 +762,15 @@ SQLRETURN ODBC_PUBLIC ODBC_API
 SQLDescribeParam(SQLHSTMT hstmt, SQLUSMALLINT ipar, SQLSMALLINT FAR * pfSqlType, SQLULEN FAR * pcbParamDef,
 		 SQLSMALLINT FAR * pibScale, SQLSMALLINT FAR * pfNullable)
 {
-	char *new_sql;
+	char *new_sql, *old_sql;
 	ODBC_PRRET_BUF;
-	TDS_STMT *dp = SQL_NULL_HSTMT;
+	SQLRETURN rc;
 	SQLINTEGER pnum;	/* parameter_ordinal int */
 	SQLCHAR pname[512+1];	/* name sysname == nvarchar(128) */
 	SQLCHAR sdt[1024+1];	/* suggested_system_type_name nvarchar(256) */
 	SQLSMALLINT max_len;	/* suggested_max_length smallint */
 	SQLSCHAR scale;		/* suggested_scale tinyint */
 	SQLCHAR udt[512+1];	/* suggested_user_type_name nvarchar(128) */
-	SQLRETURN rc;
 	/* lengths or NULL indicators */
 	SQLLEN pnum_ind = 0, pname_ind = 0, sdt_ind = 0, maxlen_ind = 0
 		, scale_ind = 0, udt_ind = 0;
@@ -786,131 +785,98 @@ SQLDescribeParam(SQLHSTMT hstmt, SQLUSMALLINT ipar, SQLSMALLINT FAR * pfSqlType,
 		ODBC_EXIT(stmt, SQL_ERROR);
 	}
 
-	/* replace the '?' parameter markers with '@pNNN' and then */
-	/* call sp_describe_undeclared_parameters on the rewritten SQL */
-	new_sql = transform_query_params(tds_dstr_cstr(&stmt->query));
+	/* save the prepared SQL, replace the '?' parameter markers with '@pNNN'
+         * and then reset the statement handle so we can use it.
+         * NOTE: FreeTDS only supports one active statement per connection -- ARGH!!! */
+	old_sql = strdup(tds_dstr_cstr(&stmt->query));
+	new_sql = transform_query_params(old_sql);
 	if (new_sql == NULL) {
+		tdsdump_log(TDS_DBG_INFO1, "SQLDescribeParam(): transform_query_params(\"%s\") returned NULL.\n", old_sql);
 		odbc_errs_add(&stmt->errs, "HY000", "Couldn't transform query parameters");
 		ODBC_EXIT_(stmt);
 	}
-	rc = odbc_SQLAllocStmt(stmt->dbc, (SQLHSTMT FAR *) &dp);
-	if (rc != SQL_SUCCESS) {
-		tdsdump_log(TDS_DBG_INFO1, "SQLDescribeParam(): SQLAllocStmt returned %s.\n", odbc_prret(rc));
-		free(new_sql);
-		odbc_SQLFreeStmt(dp, SQL_DROP, 0);
-		odbc_errs_add(&stmt->errs, "HY000", "Couldn't create statement");
-		ODBC_EXIT(stmt, rc);
-	}
-	rc = odbc_SQLSetStmtAttr(dp, SQL_ATTR_CURSOR_SENSITIVITY, SQL_INSENSITIVE, 0 _wide0);
-	if (rc != SQL_SUCCESS) {
-		tdsdump_log(TDS_DBG_INFO1, "SQLDescribeParam(): odbc_SQLSetStmtAttr failed %d.\n", rc);
-		free(new_sql);
-		odbc_SQLFreeStmt(dp, SQL_DROP, 0);
-		odbc_errs_add(&stmt->errs, "HY000", "Couldn't set statement cursor to SQL_INSENSITIVE");
-		ODBC_EXIT(stmt, rc);
-	}
-	rc = odbc_SQLSetStmtAttr(dp, SQL_ATTR_CURSOR_SCROLLABLE, SQL_SCROLLABLE, 0 _wide0);
-	if (rc != SQL_SUCCESS) {
-		tdsdump_log(TDS_DBG_INFO1, "SQLDescribeParam(): odbc_SQLSetStmtAttr failed %d.\n", rc);
-		free(new_sql);
-		odbc_SQLFreeStmt(dp, SQL_DROP, 0);
-		odbc_errs_add(&stmt->errs, "HY000", "Couldn't set statement cursor to SQL_SCROLLABLE");
-		ODBC_EXIT(stmt, rc);
-	}
-	rc = SQLExecDirect(dp, new_sql, SQL_NTS);
-	if (rc != SQL_SUCCESS) {
-		tdsdump_log(TDS_DBG_INFO1, "SQLDescribeParam(): SQLExecDirect returned %s (%d).\n", odbc_prret(rc), rc);
-		odbc_SQLFreeStmt(dp, SQL_DROP, 0);
-		odbc_errs_add(&stmt->errs, "HY000", "Couldn't retrieve parameter info");
-		ODBC_EXIT(stmt, rc);
-	}
-	tdsdump_log(TDS_DBG_INFO1, "SQLDescribeParam(): SQLExecDirect finished with rc=%d.\n", rc);
+	tdsdump_log(TDS_DBG_INFO1, "SQLDescribeParam(): rewrote SQL to \"%s\".\n", new_sql);
 #if 0
-	rc = odbc_stat_execute(dp _wide0, "sp_describe_undeclared_parameters", 1,
+	rc = odbc_SQLFreeStmt(hstmt, SQL_RESET_PARAMS, 1);
+	tdsdump_log(TDS_DBG_INFO1, "SQLDescribeParam(): odbc_SQLFreeStmt(%p, SQL_RESET_PARAMS, 0) failed with %s (%d).\n", hstmt, odbc_prret(rc), rc);
+	rc = odbc_SQLFreeStmt(hstmt, SQL_UNBIND, 1);
+	tdsdump_log(TDS_DBG_INFO1, "SQLDescribeParam(): odbc_SQLFreeStmt(%p, SQL_UNBIND, 0) failed with %s (%d).\n", hstmt, odbc_prret(rc), rc);
+	rc = odbc_SQLFreeStmt(hstmt, SQL_CLOSE, 1);
+	tdsdump_log(TDS_DBG_INFO1, "SQLDescribeParam(): odbc_SQLFreeStmt(%p, SQL_CLOSE, 0) failed with %s (%d).\n", hstmt, odbc_prret(rc), rc);
+#endif
+	/* TODO: check for (unlikely) errors when resetting the statement handle */
+
+	/* call sp_describe_undeclared_parameters on the rewritten SQL */
+	tdsdump_log(TDS_DBG_INFO1, "SQLDescribeParam(): about to call odbc_stat_execute(%p,\"%s\",%d,\"%s\",\"%s\",%zd)\n"
+			, stmt, "sp_describe_undeclared_parameters", 1, "O@tsql", new_sql, strlen(new_sql)
+	);
+	rc = odbc_stat_execute(stmt _wide0, "sp_describe_undeclared_parameters", 1,
 				"O@tsql", new_sql, strlen(new_sql));
-	free(new_sql);
 	if (rc != SQL_SUCCESS) {
-		tdsdump_log(TDS_DBG_INFO1, "SQLDescribeParam(): odbc_stat_execute failed %d.\n", rc);
-		odbc_SQLFreeStmt(dp, SQL_DROP, 0);
+		tdsdump_log(TDS_DBG_INFO1, "SQLDescribeParam(): odbc_stat_execute failed with %s (%d).\n", odbc_prret(rc), rc);
 		odbc_errs_add(&stmt->errs, "HY000", "Couldn't retrieve parameter info");
 		ODBC_EXIT(stmt, rc);
 	}
-	/* free(new_sql); */
-	tdsdump_log(TDS_DBG_INFO1, "SQLDescribeParam(): odbc_stat_execute finished with rc=%d.\n", rc);
-	tdsdump_log(TDS_DBG_INFO1, "SQLDescribeParam(): dp=%p, NULL=%p.\n", dp, SQL_NULL_HSTMT);
-	tdsdump_log(TDS_DBG_INFO1, "SQLDescribeParam(): dp->htype=%d, HSTMT=%d.\n", dp->htype, SQL_HANDLE_STMT);
+	free(new_sql);
 
-	/* bind vars for result columns we want and then move to the row */
-	/* describing the parameter we're interested in */
-	rc = odbc_SQLFetch(dp, SQL_FETCH_ABSOLUTE, ipar);
-	if (!SQL_SUCCEEDED(rc)) {
-		tdsdump_log(TDS_DBG_INFO1, "SQLDescribeParam(): SQLFetch failed %d.\n", rc);
-		odbc_SQLFreeStmt(dp, SQL_DROP, 0);
+	/* TODO: find the row describing the parameter we're interested in */
+	tdsdump_log(TDS_DBG_INFO1, "SQLDescribeParam(): about to call odbc_SQLFetch(%p, SQL_FETCH_NEXT, 0)\n", stmt);
+	rc = odbc_SQLFetch(stmt, SQL_FETCH_NEXT, 0);
+	if (rc != SQL_SUCCESS) {
+		tdsdump_log(TDS_DBG_INFO1, "SQLDescribeParam(): odbc_SQLFetch failed with %s (%d).\n", odbc_prret(rc), rc);
 		odbc_errs_add(&stmt->errs, "HY000", "Couldn't get to needed row");
 		ODBC_EXIT_(stmt);
 	}
-	rc = SQLGetData(dp, 11 /* suggested_user_type_name */
+
+	/* Get data for the desired parameter */
+	tdsdump_log(TDS_DBG_INFO1, "SQLDescribeParam(): about to call SQLGetData(%p, %d, %d, %p, %zd, %p).\n", stmt, 11, SQL_C_CHAR, udt, sizeof(udt)/sizeof(udt[0]), &udt_ind);
+	rc = SQLGetData(stmt, 11 /* suggested_user_type_name */
 			, SQL_C_CHAR /* sysname */
 			, udt, sizeof(udt)/sizeof(udt[0]), &udt_ind);
-	if (!SQL_SUCCEEDED(rc)) {
-		tdsdump_log(TDS_DBG_INFO1, "SQLDescribeParam(): SQLBindCol(11) failed %d.\n", rc);
-		odbc_SQLFreeStmt(dp, SQL_DROP, 0);
-		odbc_errs_add(&stmt->errs, "HY000", "Couldn't bind to suggested_user_type_name");
-		ODBC_EXIT_(stmt);
+	if (rc != SQL_SUCCESS) {
+		tdsdump_log(TDS_DBG_INFO1, "SQLDescribeParam(): SQLGetData(11) failed with %s (%d).\n", odbc_prret(rc), rc);
+		odbc_errs_add(&stmt->errs, "HY000", "Couldn't get data for suggested_user_type_name");
+		ODBC_EXIT(stmt, rc);
 	}
-#endif
-	rc = SQLBindCol(dp, 7 /* suggested_scale */
+	rc = SQLGetData(stmt, 7 /* suggested_scale */
 			, SQL_C_STINYINT /* tinyint */
 			, &scale, sizeof(scale), &scale_ind);
 	if (rc != SQL_SUCCESS) {
-		tdsdump_log(TDS_DBG_INFO1, "SQLDescribeParam(): SQLBindCol(7) failed %d.\n", rc);
-		odbc_SQLFreeStmt(dp, SQL_DROP, 0);
+		tdsdump_log(TDS_DBG_INFO1, "SQLDescribeParam(): SQLGetData(7) failed with %s (%d).\n", odbc_prret(rc), rc);
 		odbc_errs_add(&stmt->errs, "HY000", "Couldn't bind to suggested_scale");
 		ODBC_EXIT(stmt, rc);
 	}
-	rc = SQLBindCol(dp, 5 /* suggested_max_length */
+	rc = SQLGetData(stmt, 5 /* suggested_max_length */
 			, SQL_C_SSHORT /* smallint */
 			, &max_len, sizeof(max_len), &maxlen_ind);
 	if (!SQL_SUCCEEDED(rc)) {
-		tdsdump_log(TDS_DBG_INFO1, "SQLDescribeParam(): SQLBindCol(5) failed %d.\n", rc);
-		odbc_SQLFreeStmt(dp, SQL_DROP, 0);
+		tdsdump_log(TDS_DBG_INFO1, "SQLDescribeParam(): SQLGetData(5) failed with %s (%d).\n", odbc_prret(rc), rc);
 		odbc_errs_add(&stmt->errs, "HY000", "Couldn't bind to suggested_max_length");
 		ODBC_EXIT_(stmt);
 	}
-	rc = SQLBindCol(dp, 4 /* suggested_system_type_name */
+	rc = SQLGetData(stmt, 4 /* suggested_system_type_name */
 			, SQL_C_CHAR /* nvarchar(256) */
 			, sdt, sizeof(sdt)/sizeof(sdt[0]), &sdt_ind);
 	if (!SQL_SUCCEEDED(rc)) {
-		tdsdump_log(TDS_DBG_INFO1, "SQLDescribeParam(): SQLBindCol(4) failed %d.\n", rc);
-		odbc_SQLFreeStmt(dp, SQL_DROP, 0);
+		tdsdump_log(TDS_DBG_INFO1, "SQLDescribeParam(): SQLGetData(4) failed with %s (%d).\n", odbc_prret(rc), rc);
 		odbc_errs_add(&stmt->errs, "HY000", "Couldn't bind to suggested_system_type_name");
 		ODBC_EXIT_(stmt);
 	}
-	rc = SQLBindCol(dp, 2 /* name */
+	rc = SQLGetData(stmt, 2 /* name */
 			, SQL_C_CHAR /* sysname [nvarchar(128)] */
 			, pname, sizeof(pname)/sizeof(pname[0]), &pname_ind);
 	if (!SQL_SUCCEEDED(rc)) {
-		tdsdump_log(TDS_DBG_INFO1, "SQLDescribeParam(): SQLBindCol(2) failed %d.\n", rc);
-		odbc_SQLFreeStmt(dp, SQL_DROP, 0);
+		tdsdump_log(TDS_DBG_INFO1, "SQLDescribeParam(): SQLGetData(2) failed with %s (%d).\n", odbc_prret(rc), rc);
 		odbc_errs_add(&stmt->errs, "HY000", "Couldn't bind to name");
 		ODBC_EXIT_(stmt);
 	}
-	rc = SQLBindCol(dp, 1 /* parameter_ordinal */
+	tdsdump_log(TDS_DBG_INFO1, "SQLDescribeParam(): about to call SQLGetData(%p, %d, %d, %p, %zd, %p).\n", stmt, 1, SQL_C_SLONG, &pnum, sizeof(pnum), &pnum_ind);
+	rc = SQLGetData(stmt, 1 /* parameter_ordinal */
 			, SQL_C_SLONG /* int */
 			, &pnum, sizeof(pnum), &pnum_ind);
-<<<<<<< HEAD
-	if (!SQL_SUCCEEDED(rc)) {
-		tdsdump_log(TDS_DBG_INFO1, "SQLDescribeParam(): SQLBindCol(1) failed %d.\n", rc);
-		odbc_SQLFreeStmt(dp, SQL_DROP, 0);
-		odbc_errs_add(&stmt->errs, "HY000", "Couldn't bind to parameter_ordinal");
-		ODBC_EXIT_(stmt);
-	}
-=======
->>>>>>> 94ee3d05 (wip - bind not working)
 	tdsdump_log(TDS_DBG_INFO1, "SQLDescribeParam: Row #%d: pnum=%d, pname='%s'"
 			", sdt='%s', max_len=%d, scale=%d, udt='%s'.\n"
 			, ipar, pnum, pname, sdt, max_len, scale, udt);
-	odbc_SQLFreeStmt(dp, SQL_DROP, 0);
 
 	/**
 	 * Validate the following:
@@ -4150,9 +4116,11 @@ odbc_SQLFetch(TDS_STMT * stmt, SQLSMALLINT FetchOrientation, SQLLEN FetchOffset)
 
 	tds = stmt->tds;
 	num_rows = ard->header.sql_desc_array_size;
+	tdsdump_log(TDS_DBG_INFO1, "odbc_SQLFetch(): num_rows=%zd\n", num_rows);
 
 	/* TODO cursor check also type of cursor (scrollable, not forward) */
 	if (FetchOrientation != SQL_FETCH_NEXT && (!stmt->cursor || !stmt->dbc->cursor_support)) {
+		tdsdump_log(TDS_DBG_INFO1, "odbc_SQLFetch(): emitting HY106\n");
 		odbc_errs_add(&stmt->errs, "HY106", NULL);
 		return SQL_ERROR;
 	}
@@ -4177,6 +4145,7 @@ odbc_SQLFetch(TDS_STMT * stmt, SQLSMALLINT FetchOrientation, SQLLEN FetchOffset)
 			fetch_type = TDS_CURSOR_FETCH_PREV;
 			break;
 		case SQL_FETCH_ABSOLUTE:
+			tdsdump_log(TDS_DBG_INFO1, "odbc_SQLFetch(): found SQL_FETCH_ABSOLUTE\n");
 			fetch_type = TDS_CURSOR_FETCH_ABSOLUTE;
 			break;
 		case SQL_FETCH_RELATIVE:
@@ -4197,10 +4166,12 @@ odbc_SQLFetch(TDS_STMT * stmt, SQLSMALLINT FetchOrientation, SQLLEN FetchOffset)
 			 * so this function can't fail but remember to add error
 			 * check when tds5 will be supported
 			 */
+			tdsdump_log(TDS_DBG_INFO1, "odbc_SQLFetch(): about to call tds_cursor_setrows()\n");
 			tds_cursor_setrows(tds, cursor, &send);
 		}
 
 		if (TDS_FAILED(tds_cursor_fetch(tds, cursor, fetch_type, FetchOffset))) {
+			tdsdump_log(TDS_DBG_INFO1, "odbc_SQLFetch(): tds_cursor_fetch() failed");
 			/* TODO what kind of error ?? */
 			ODBC_SAFE_ERROR(stmt);
 			return SQL_ERROR;
@@ -4225,6 +4196,7 @@ odbc_SQLFetch(TDS_STMT * stmt, SQLSMALLINT FetchOrientation, SQLLEN FetchOffset)
 	}
 
 	stmt->row++;
+	tdsdump_log(TDS_DBG_INFO1, "odbc_SQLFetch(): row=%d\n", stmt->row);
 
 	fetched_ptr = &dummy;
 	if (stmt->ird->header.sql_desc_rows_processed_ptr)
