@@ -758,6 +758,19 @@ transform_query_params(const char *query_in) {
 	return out;
 }
 
+static const char *
+tds_state_str(TDS_STATE s) {
+	switch(s) {
+	case TDS_IDLE:		return "TDS_IDLE: no data expected";
+	case TDS_WRITING:	return "TDS_WRITING: client is writing data";
+	case TDS_SENDING:	return "TDS_SENDING: client would send data";
+	case TDS_PENDING:	return "TDS_PENDING: client is waiting for data";
+	case TDS_READING:	return "TDS_READING: client is reading data";
+	case TDS_DEAD:		return "TDS_DEAD: no connection";
+	default:		return "UNKNOWN TDS state";
+	}
+}
+
 SQLRETURN ODBC_PUBLIC ODBC_API
 SQLDescribeParam(SQLHSTMT hstmt, SQLUSMALLINT ipar, SQLSMALLINT FAR * pfSqlType, SQLULEN FAR * pcbParamDef,
 		 SQLSMALLINT FAR * pibScale, SQLSMALLINT FAR * pfNullable)
@@ -775,9 +788,10 @@ SQLDescribeParam(SQLHSTMT hstmt, SQLUSMALLINT ipar, SQLSMALLINT FAR * pfSqlType,
 	SQLLEN pnum_ind = 0, pname_ind = 0, sdt_ind = 0, maxlen_ind = 0
 		, scale_ind = 0, udt_ind = 0;
 
-	ODBC_ENTER_HSTMT;
+	ODBC_ENTER_HSTMT;	/* TDS_STMT *stmt = (struct _hstmt *) hstmt; */
 	tdsdump_log(TDS_DBG_FUNC, "SQLDescribeParam(%p, %d, %p, %p, %p, %p)\n", 
 			hstmt, ipar, pfSqlType, pcbParamDef, pibScale, pfNullable);
+	tdsdump_log(TDS_DBG_INFO1, "SQLDescribeParam(): tds=%p\n", stmt->tds);
 
 	if ( !TDS_IS_MSSQL(stmt->dbc->tds_socket)
 	|| TDS_MS_VER(11,0,0) > stmt->dbc->tds_socket->conn->product_version ) {
@@ -796,14 +810,20 @@ SQLDescribeParam(SQLHSTMT hstmt, SQLUSMALLINT ipar, SQLSMALLINT FAR * pfSqlType,
 		ODBC_EXIT_(stmt);
 	}
 	tdsdump_log(TDS_DBG_INFO1, "SQLDescribeParam(): rewrote SQL to \"%s\".\n", new_sql);
+	tdsdump_log(TDS_DBG_INFO1, "SQLDescribeParam(): tds=%p, state = %s.\n", stmt->tds, tds_state_str(stmt->tds->state));
 #if 0
-	rc = odbc_SQLFreeStmt(hstmt, SQL_RESET_PARAMS, 1);
+	rc = odbc_SQLFreeStmt(stmt, SQL_RESET_PARAMS, 1);
 	tdsdump_log(TDS_DBG_INFO1, "SQLDescribeParam(): odbc_SQLFreeStmt(%p, SQL_RESET_PARAMS, 0) failed with %s (%d).\n", hstmt, odbc_prret(rc), rc);
-	rc = odbc_SQLFreeStmt(hstmt, SQL_UNBIND, 1);
+	rc = odbc_SQLFreeStmt(stmt, SQL_UNBIND, 1);
 	tdsdump_log(TDS_DBG_INFO1, "SQLDescribeParam(): odbc_SQLFreeStmt(%p, SQL_UNBIND, 0) failed with %s (%d).\n", hstmt, odbc_prret(rc), rc);
-	rc = odbc_SQLFreeStmt(hstmt, SQL_CLOSE, 1);
+	rc = odbc_SQLFreeStmt(stmt, SQL_CLOSE, 1);
 	tdsdump_log(TDS_DBG_INFO1, "SQLDescribeParam(): odbc_SQLFreeStmt(%p, SQL_CLOSE, 0) failed with %s (%d).\n", hstmt, odbc_prret(rc), rc);
+#else
+	tdsdump_log(TDS_DBG_INFO1, "SQLDescribeParam(): about to free bound parameters in apd & ipd descriptors\n");
+	desc_free_records(stmt->apd);
+	desc_free_records(stmt->ipd);
 #endif
+	tdsdump_log(TDS_DBG_INFO1, "SQLDescribeParam(): tds=%p, state = %s.\n", stmt->tds, tds_state_str(stmt->tds->state));
 	/* TODO: check for (unlikely) errors when resetting the statement handle */
 
 	/* call sp_describe_undeclared_parameters on the rewritten SQL */
