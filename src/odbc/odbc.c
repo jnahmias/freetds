@@ -776,6 +776,9 @@ SQLDescribeParam(SQLHSTMT hstmt, SQLUSMALLINT ipar, SQLSMALLINT FAR * pfSqlType,
 		 SQLSMALLINT FAR * pibScale, SQLSMALLINT FAR * pfNullable)
 {
 	char *new_sql, *old_sql;
+	char *prefix = "EXEC sp_describe_undeclared_parameters @tsql=N'";
+	char *dp = NULL;
+	size_t len = 0;
 	ODBC_PRRET_BUF;
 	SQLRETURN rc;
 	SQLINTEGER pnum;	/* parameter_ordinal int */
@@ -810,7 +813,6 @@ SQLDescribeParam(SQLHSTMT hstmt, SQLUSMALLINT ipar, SQLSMALLINT FAR * pfSqlType,
 		ODBC_EXIT_(stmt);
 	}
 	tdsdump_log(TDS_DBG_INFO1, "SQLDescribeParam(): rewrote SQL to \"%s\".\n", new_sql);
-	tdsdump_log(TDS_DBG_INFO1, "SQLDescribeParam(): tds=%p, state = %s.\n", stmt->tds, tds_state_str(stmt->tds->state));
 #if 0
 	rc = odbc_SQLFreeStmt(stmt, SQL_RESET_PARAMS, 1);
 	tdsdump_log(TDS_DBG_INFO1, "SQLDescribeParam(): odbc_SQLFreeStmt(%p, SQL_RESET_PARAMS, 0) failed with %s (%d).\n", hstmt, odbc_prret(rc), rc);
@@ -818,15 +820,18 @@ SQLDescribeParam(SQLHSTMT hstmt, SQLUSMALLINT ipar, SQLSMALLINT FAR * pfSqlType,
 	tdsdump_log(TDS_DBG_INFO1, "SQLDescribeParam(): odbc_SQLFreeStmt(%p, SQL_UNBIND, 0) failed with %s (%d).\n", hstmt, odbc_prret(rc), rc);
 	rc = odbc_SQLFreeStmt(stmt, SQL_CLOSE, 1);
 	tdsdump_log(TDS_DBG_INFO1, "SQLDescribeParam(): odbc_SQLFreeStmt(%p, SQL_CLOSE, 0) failed with %s (%d).\n", hstmt, odbc_prret(rc), rc);
+	/* TODO: check for (unlikely) errors when resetting the statement handle */
 #else
 	tdsdump_log(TDS_DBG_INFO1, "SQLDescribeParam(): about to free bound parameters in apd & ipd descriptors\n");
-	desc_free_records(stmt->apd);
-	desc_free_records(stmt->ipd);
+	if (stmt->ard) desc_free_records(stmt->ard);
+	if (stmt->apd) desc_free_records(stmt->apd);
+	if (stmt->ipd) desc_free_records(stmt->ipd);
+	if (stmt->tds)
+		tdsdump_log(TDS_DBG_INFO1, "SQLDescribeParam(): tds=%p, state = %s.\n", stmt->tds, tds_state_str(stmt->tds->state));
 #endif
-	tdsdump_log(TDS_DBG_INFO1, "SQLDescribeParam(): tds=%p, state = %s.\n", stmt->tds, tds_state_str(stmt->tds->state));
-	/* TODO: check for (unlikely) errors when resetting the statement handle */
 
 	/* call sp_describe_undeclared_parameters on the rewritten SQL */
+#if 0
 	tdsdump_log(TDS_DBG_INFO1, "SQLDescribeParam(): about to call odbc_stat_execute(%p,\"%s\",%d,\"%s\",\"%s\",%zd)\n"
 			, stmt, "sp_describe_undeclared_parameters", 1, "O@tsql", new_sql, strlen(new_sql)
 	);
@@ -837,18 +842,64 @@ SQLDescribeParam(SQLHSTMT hstmt, SQLUSMALLINT ipar, SQLSMALLINT FAR * pfSqlType,
 		odbc_errs_add(&stmt->errs, "HY000", "Couldn't retrieve parameter info");
 		ODBC_EXIT(stmt, rc);
 	}
+#else
+	tdsdump_log(TDS_DBG_INFO1, "SQLDescribeParam(): generating full SQL query to lookup parameters\n");
+	len = strlen(prefix) + strlen(new_sql) + 1 /* end quote (') */ + 1 /* NUL terminator */;
+	dp = tds_new0(char, len);
+	if (new_sql == NULL) {
+		tdsdump_log(TDS_DBG_INFO1, "SQLDescribeParam(): tds_new0(char,%zd) returned NULL\n", len);
+		odbc_errs_add(&stmt->errs, "HY001", "Memory allocation error");
+		ODBC_EXIT_(stmt);
+	}
+	strcpy(dp, prefix);
+	strcat(dp, new_sql);
+	dp[len-2] = '\'';
+	dp[len-1] = '\0';
+	tdsdump_log(TDS_DBG_INFO1, "SQLDescribeParam(): using SQL query \"%s\".\n", dp);
+	tdsdump_log(TDS_DBG_INFO1, "SQLDescribeParam(): about to call SQLExecDirect(%p, \"%s\", SQL_NTS)\n", stmt, dp);
+	rc = SQLExecDirect(stmt, dp, SQL_NTS);
+	if (rc != SQL_SUCCESS) {
+		tdsdump_log(TDS_DBG_INFO1, "SQLDescribeParam(): SQLExecDirect failed with %s (%d).\n", odbc_prret(rc), rc);
+		odbc_errs_add(&stmt->errs, "HY000", "Couldn't retrieve parameter info");
+		ODBC_EXIT(stmt, rc);
+	}
+	free(dp);
+#endif
 	free(new_sql);
+	if (stmt->tds)
+		tdsdump_log(TDS_DBG_INFO1, "SQLDescribeParam(): tds=%p, state = %s.\n", stmt->tds, tds_state_str(stmt->tds->state));
 
 	/* TODO: find the row describing the parameter we're interested in */
+#if 0
 	tdsdump_log(TDS_DBG_INFO1, "SQLDescribeParam(): about to call odbc_SQLFetch(%p, SQL_FETCH_NEXT, 0)\n", stmt);
 	rc = odbc_SQLFetch(stmt, SQL_FETCH_NEXT, 0);
 	if (rc != SQL_SUCCESS) {
 		tdsdump_log(TDS_DBG_INFO1, "SQLDescribeParam(): odbc_SQLFetch failed with %s (%d).\n", odbc_prret(rc), rc);
 		odbc_errs_add(&stmt->errs, "HY000", "Couldn't get to needed row");
-		ODBC_EXIT_(stmt);
+		ODBC_EXIT(stmt, rc);
 	}
+#else
+	tdsdump_log(TDS_DBG_INFO1, "SQLDescribeParam(): about to call SQLFetch(%p)\n", stmt);
+	rc = SQLFetch(stmt);
+	if (rc != SQL_SUCCESS) {
+		tdsdump_log(TDS_DBG_INFO1, "SQLDescribeParam(): SQLFetch failed with %s (%d).\n", odbc_prret(rc), rc);
+		odbc_errs_add(&stmt->errs, "HY000", "Couldn't get to needed row");
+		ODBC_EXIT(stmt, rc);
+	}
+#endif
+	if (stmt->tds)
+		tdsdump_log(TDS_DBG_INFO1, "SQLDescribeParam(): tds=%p, state = %s.\n", stmt->tds, tds_state_str(stmt->tds->state));
 
 	/* Get data for the desired parameter */
+	tdsdump_log(TDS_DBG_INFO1, "SQLDescribeParam(): about to call SQLGetData(%p, %d, %d, %p, %zd, %p).\n", stmt, 1, SQL_C_SLONG, &pnum, sizeof(pnum), &pnum_ind);
+	rc = SQLGetData(stmt, 1 /* parameter_ordinal */
+			, SQL_C_SLONG /* int */
+			, &pnum, sizeof(pnum), &pnum_ind);
+	if (!SQL_SUCCEEDED(rc)) {
+		tdsdump_log(TDS_DBG_INFO1, "SQLDescribeParam(): SQLGetData(1) failed with %s (%d).\n", odbc_prret(rc), rc);
+		odbc_errs_add(&stmt->errs, "HY000", "Couldn't get data for parameter_ordinal");
+		ODBC_EXIT_(stmt);
+	}
 	tdsdump_log(TDS_DBG_INFO1, "SQLDescribeParam(): about to call SQLGetData(%p, %d, %d, %p, %zd, %p).\n", stmt, 11, SQL_C_CHAR, udt, sizeof(udt)/sizeof(udt[0]), &udt_ind);
 	rc = SQLGetData(stmt, 11 /* suggested_user_type_name */
 			, SQL_C_CHAR /* sysname */
@@ -890,10 +941,6 @@ SQLDescribeParam(SQLHSTMT hstmt, SQLUSMALLINT ipar, SQLSMALLINT FAR * pfSqlType,
 		odbc_errs_add(&stmt->errs, "HY000", "Couldn't bind to name");
 		ODBC_EXIT_(stmt);
 	}
-	tdsdump_log(TDS_DBG_INFO1, "SQLDescribeParam(): about to call SQLGetData(%p, %d, %d, %p, %zd, %p).\n", stmt, 1, SQL_C_SLONG, &pnum, sizeof(pnum), &pnum_ind);
-	rc = SQLGetData(stmt, 1 /* parameter_ordinal */
-			, SQL_C_SLONG /* int */
-			, &pnum, sizeof(pnum), &pnum_ind);
 	tdsdump_log(TDS_DBG_INFO1, "SQLDescribeParam: Row #%d: pnum=%d, pname='%s'"
 			", sdt='%s', max_len=%d, scale=%d, udt='%s'.\n"
 			, ipar, pnum, pname, sdt, max_len, scale, udt);
