@@ -776,7 +776,7 @@ SQLDescribeParam(SQLHSTMT hstmt, SQLUSMALLINT ipar, SQLSMALLINT FAR * pfSqlType,
 		 SQLSMALLINT FAR * pibScale, SQLSMALLINT FAR * pfNullable)
 {
 	char *new_sql, *old_sql;
-	char *prefix = "EXEC sp_describe_undeclared_parameters @tsql=N'";
+	char *prefix = "sp_describe_undeclared_parameters @tsql=N'";
 	char *dp = NULL;
 	size_t len = 0;
 	ODBC_PRRET_BUF;
@@ -794,7 +794,6 @@ SQLDescribeParam(SQLHSTMT hstmt, SQLUSMALLINT ipar, SQLSMALLINT FAR * pfSqlType,
 	ODBC_ENTER_HSTMT;	/* TDS_STMT *stmt = (struct _hstmt *) hstmt; */
 	tdsdump_log(TDS_DBG_FUNC, "SQLDescribeParam(%p, %d, %p, %p, %p, %p)\n", 
 			hstmt, ipar, pfSqlType, pcbParamDef, pibScale, pfNullable);
-	tdsdump_log(TDS_DBG_INFO1, "SQLDescribeParam(): tds=%p\n", stmt->tds);
 
 	if ( !TDS_IS_MSSQL(stmt->dbc->tds_socket)
 	|| TDS_MS_VER(11,0,0) > stmt->dbc->tds_socket->conn->product_version ) {
@@ -813,36 +812,6 @@ SQLDescribeParam(SQLHSTMT hstmt, SQLUSMALLINT ipar, SQLSMALLINT FAR * pfSqlType,
 		ODBC_EXIT_(stmt);
 	}
 	tdsdump_log(TDS_DBG_INFO1, "SQLDescribeParam(): rewrote SQL to \"%s\".\n", new_sql);
-#if 0
-	rc = odbc_SQLFreeStmt(stmt, SQL_RESET_PARAMS, 1);
-	tdsdump_log(TDS_DBG_INFO1, "SQLDescribeParam(): odbc_SQLFreeStmt(%p, SQL_RESET_PARAMS, 0) failed with %s (%d).\n", hstmt, odbc_prret(rc), rc);
-	rc = odbc_SQLFreeStmt(stmt, SQL_UNBIND, 1);
-	tdsdump_log(TDS_DBG_INFO1, "SQLDescribeParam(): odbc_SQLFreeStmt(%p, SQL_UNBIND, 0) failed with %s (%d).\n", hstmt, odbc_prret(rc), rc);
-	rc = odbc_SQLFreeStmt(stmt, SQL_CLOSE, 1);
-	tdsdump_log(TDS_DBG_INFO1, "SQLDescribeParam(): odbc_SQLFreeStmt(%p, SQL_CLOSE, 0) failed with %s (%d).\n", hstmt, odbc_prret(rc), rc);
-	/* TODO: check for (unlikely) errors when resetting the statement handle */
-#else
-	tdsdump_log(TDS_DBG_INFO1, "SQLDescribeParam(): about to free bound parameters in apd & ipd descriptors\n");
-	if (stmt->ard) desc_free_records(stmt->ard);
-	if (stmt->apd) desc_free_records(stmt->apd);
-	if (stmt->ipd) desc_free_records(stmt->ipd);
-	if (stmt->tds)
-		tdsdump_log(TDS_DBG_INFO1, "SQLDescribeParam(): tds=%p, state = %s.\n", stmt->tds, tds_state_str(stmt->tds->state));
-#endif
-
-	/* call sp_describe_undeclared_parameters on the rewritten SQL */
-#if 0
-	tdsdump_log(TDS_DBG_INFO1, "SQLDescribeParam(): about to call odbc_stat_execute(%p,\"%s\",%d,\"%s\",\"%s\",%zd)\n"
-			, stmt, "sp_describe_undeclared_parameters", 1, "O@tsql", new_sql, strlen(new_sql)
-	);
-	rc = odbc_stat_execute(stmt _wide0, "sp_describe_undeclared_parameters", 1,
-				"O@tsql", new_sql, strlen(new_sql));
-	if (rc != SQL_SUCCESS) {
-		tdsdump_log(TDS_DBG_INFO1, "SQLDescribeParam(): odbc_stat_execute failed with %s (%d).\n", odbc_prret(rc), rc);
-		odbc_errs_add(&stmt->errs, "HY000", "Couldn't retrieve parameter info");
-		ODBC_EXIT(stmt, rc);
-	}
-#else
 	tdsdump_log(TDS_DBG_INFO1, "SQLDescribeParam(): generating full SQL query to lookup parameters\n");
 	len = strlen(prefix) + strlen(new_sql) + 1 /* end quote (') */ + 1 /* NUL terminator */;
 	dp = tds_new0(char, len);
@@ -855,22 +824,45 @@ SQLDescribeParam(SQLHSTMT hstmt, SQLUSMALLINT ipar, SQLSMALLINT FAR * pfSqlType,
 	strcat(dp, new_sql);
 	dp[len-2] = '\'';
 	dp[len-1] = '\0';
-	tdsdump_log(TDS_DBG_INFO1, "SQLDescribeParam(): using SQL query \"%s\".\n", dp);
-	tdsdump_log(TDS_DBG_INFO1, "SQLDescribeParam(): about to call SQLExecDirect(%p, \"%s\", SQL_NTS)\n", stmt, dp);
-	rc = SQLExecDirect(stmt, dp, SQL_NTS);
+	free(new_sql);
+
+	/* call sp_describe_undeclared_parameters on the rewritten SQL */
+	tdsdump_log(TDS_DBG_INFO1, "SQLDescribeParam(): about to free bound parameters in apd & ipd descriptors\n");
+	if (stmt->ard) desc_free_records(stmt->ard);
+	if (stmt->apd) desc_free_records(stmt->apd);
+	if (stmt->ipd) desc_free_records(stmt->ipd);
+	tdsdump_log(TDS_DBG_INFO1, "SQLDescribeParam(): executing SQL query \"%s\".\n", dp);
+	rc = odbc_set_stmt_query(stmt, (ODBC_CHAR *) dp, SQL_NTS _wide0);
 	if (rc != SQL_SUCCESS) {
-		tdsdump_log(TDS_DBG_INFO1, "SQLDescribeParam(): SQLExecDirect failed with %s (%d).\n", odbc_prret(rc), rc);
+		tdsdump_log(TDS_DBG_INFO1, "SQLDescribeParam(): odbc_set_stmt_query failed with %s (%d).\n", odbc_prret(rc), rc);
+		odbc_errs_add(&stmt->errs, "HY000", "Couldn't retrieve parameter info");
+		ODBC_EXIT(stmt, rc);
+	}
+	stmt->param_data_called = 0;
+	rc = prepare_call(stmt);
+	if (rc != SQL_SUCCESS) {
+		tdsdump_log(TDS_DBG_INFO1, "SQLDescribeParam(): prepare_call failed with %s (%d).\n", odbc_prret(rc), rc);
+		odbc_errs_add(&stmt->errs, "HY000", "Couldn't retrieve parameter info");
+		ODBC_EXIT(stmt, rc);
+	}
+	rc = start_parse_prepared_query(stmt, true);
+	if (rc != SQL_SUCCESS) {
+		tdsdump_log(TDS_DBG_INFO1, "SQLDescribeParam(): start_parse_prepared_query failed with %s (%d).\n", odbc_prret(rc), rc);
+		odbc_errs_add(&stmt->errs, "HY000", "Couldn't retrieve parameter info");
+		ODBC_EXIT(stmt, rc);
+	}
+	rc = odbc_SQLExecute(stmt);
+	if (rc != SQL_SUCCESS) {
+		tdsdump_log(TDS_DBG_INFO1, "SQLDescribeParam(): odbc_SQLExecute failed with %s (%d).\n", odbc_prret(rc), rc);
 		odbc_errs_add(&stmt->errs, "HY000", "Couldn't retrieve parameter info");
 		ODBC_EXIT(stmt, rc);
 	}
 	free(dp);
-#endif
-	free(new_sql);
 	if (stmt->tds)
 		tdsdump_log(TDS_DBG_INFO1, "SQLDescribeParam(): tds=%p, state = %s.\n", stmt->tds, tds_state_str(stmt->tds->state));
 
 	/* TODO: find the row describing the parameter we're interested in */
-#if 0
+#if 1
 	tdsdump_log(TDS_DBG_INFO1, "SQLDescribeParam(): about to call odbc_SQLFetch(%p, SQL_FETCH_NEXT, 0)\n", stmt);
 	rc = odbc_SQLFetch(stmt, SQL_FETCH_NEXT, 0);
 	if (rc != SQL_SUCCESS) {
